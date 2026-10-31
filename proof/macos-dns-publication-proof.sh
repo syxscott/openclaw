@@ -26,6 +26,9 @@ fail() { printf '\nPROOF FAILED: %s\n' "$*" >&2; exit 1; }
 
 cleanup() {
   pkill -9 -f "dns setup" 2>/dev/null || true
+  if [ -f /usr/bin/tee.proof-real ]; then
+    sudo mv /usr/bin/tee.proof-real /usr/bin/tee 2>/dev/null || true
+  fi
   if [ -n "${PROOF_DIR}" ] && [ -d "${PROOF_DIR}" ]; then
     for logfile in "${PROOF_DIR}"/*.log; do
       [ -f "${logfile}" ] || continue
@@ -124,18 +127,18 @@ printf '.:53 {\n  errors\n  log\n}\n# marker-before-interruption\n' | sudo tee "
 sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
 sudo chmod 640 "${COREFILE}"
 BEFORE_BYTES="$(sudo cat "${COREFILE}")"
-# A sudo wrapper that pauses during the staged write gives the proof a
-# deterministic interruption point inside the staging window.
-mkdir -p "${PROOF_DIR}/bin"
-cat >"${PROOF_DIR}/bin/sudo" <<'WRAPPER'
+# A paused tee gives the proof a deterministic interruption point inside the
+# staging window. sudo resolves tee through its secure_path, so the runner's
+# copy is the one the privileged publication uses.
+sudo mv /usr/bin/tee /usr/bin/tee.proof-real
+cat >/usr/bin/tee.proof-slow <<'SLOW'
 #!/usr/bin/env bash
-if [ "${1:-}" = "tee" ]; then
-  sleep 30
-fi
-exec /usr/bin/sudo "$@"
-WRAPPER
-chmod +x "${PROOF_DIR}/bin/sudo"
-PATH="${PROOF_DIR}/bin:${PATH}" pnpm openclaw dns setup --domain openclaw.internal --apply \
+sleep 45
+exec /usr/bin/tee.proof-real "$@"
+SLOW
+sudo chmod +x /usr/bin/tee.proof-slow
+sudo mv /usr/bin/tee.proof-slow /usr/bin/tee
+pnpm openclaw dns setup --domain openclaw.internal --apply \
   >"${PROOF_DIR}/setup-interrupted.log" 2>&1 &
 SETUP_PID=$!
 STAGED=""
@@ -157,6 +160,7 @@ sudo -u "${READER_ACCOUNT}" cat "${STAGING_PATH}" >/dev/null 2>&1 \
 echo "reader denied the staged configuration"
 pkill -9 -f "dns setup" 2>/dev/null || true
 kill -9 "${SETUP_PID}" 2>/dev/null || true
+sudo mv /usr/bin/tee.proof-real /usr/bin/tee 2>/dev/null || true
 sleep 1
 AFTER_BYTES="$(sudo cat "${COREFILE}")"
 if [ "${BEFORE_BYTES}" != "${AFTER_BYTES}" ]; then
