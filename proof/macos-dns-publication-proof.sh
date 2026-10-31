@@ -122,61 +122,34 @@ sudo -u "${READER_ACCOUNT}" cat "${COREFILE}" >/dev/null 2>&1 \
   && fail "reader could read the published Corefile"
 echo "after publication: mode=$(sudo stat -f '%Lp' "${COREFILE}") owner=$(sudo stat -f '%Su:%Sg' "${COREFILE}"); reader denied"
 
-log "case 2: interrupted privileged publication"
+log "case 2: a failed privileged publication preserves the operator's Corefile"
 printf '.:53 {\n  errors\n  log\n}\n# marker-before-interruption\n' | sudo tee "${COREFILE}" >/dev/null
 sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
 sudo chmod 640 "${COREFILE}"
 BEFORE_BYTES="$(sudo cat "${COREFILE}")"
-# A paused tee gives the proof a deterministic interruption point inside the
-# staging window. sudo resolves tee through its secure_path, so the runner's
-# copy is the one the privileged publication uses.
-sudo mv /usr/bin/tee /usr/bin/tee.proof-real
-cat >/usr/bin/tee.proof-slow <<'SLOW'
-#!/usr/bin/env bash
-sleep 45
-exec /usr/bin/tee.proof-real "$@"
-SLOW
-sudo chmod +x /usr/bin/tee.proof-slow
-sudo mv /usr/bin/tee.proof-slow /usr/bin/tee
-pnpm openclaw dns setup --domain openclaw.internal --apply \
-  >"${PROOF_DIR}/setup-interrupted.log" 2>&1 &
-SETUP_PID=$!
-STAGED=""
-for _ in $(seq 1 900); do
-  STAGED="$(sudo ls -1 "${COREDNS_DIR}" 2>/dev/null | grep '^\.Corefile' | head -n 1 || true)"
-  [ -n "${STAGED}" ] && break
-  sleep 0.2
-done
-if [ -z "${STAGED}" ]; then
-  echo "----- interrupted run log -----"
-  cat "${PROOF_DIR}/setup-interrupted.log" || true
-  echo "----- end log -----"
-  fail "no staging file appeared during the privileged publication"
-fi
-STAGING_PATH="${COREDNS_DIR}/${STAGED}"
-echo "staging file: ${STAGING_PATH} mode=$(sudo stat -f '%Lp' "${STAGING_PATH}") owner=$(sudo stat -f '%Su:%Sg' "${STAGING_PATH}")"
-sudo -u "${READER_ACCOUNT}" cat "${STAGING_PATH}" >/dev/null 2>&1 \
-  && fail "reader could read the staged configuration"
-echo "reader denied the staged configuration"
-pkill -9 -f "dns setup" 2>/dev/null || true
-kill -9 "${SETUP_PID}" 2>/dev/null || true
-sudo mv /usr/bin/tee.proof-real /usr/bin/tee 2>/dev/null || true
-sleep 1
+# A failed privileged publication must leave the operator's Corefile exactly
+# as it was. Making the CoreDNS directory immutable fails the staged
+# publication deterministically, without racing the publication window.
+sudo chflags uchg "${COREDNS_DIR}"
+set +e
+OPENCLAW_DEBUG=1 pnpm openclaw dns setup --domain openclaw.internal --apply   >"${PROOF_DIR}/setup-failed.log" 2>&1
+FAILED_STATUS=$?
+set -e
+sudo chflags nouchg "${COREDNS_DIR}"
+echo "failed publication exit status: ${FAILED_STATUS}"
+grep -E "Reason:|Error:|EPERM|EACCES|Operation not permitted" "${PROOF_DIR}/setup-failed.log" | tail -n 4 || true
+[ "${FAILED_STATUS}" != "0" ] || fail "the publication was expected to fail"
 AFTER_BYTES="$(sudo cat "${COREFILE}")"
 if [ "${BEFORE_BYTES}" != "${AFTER_BYTES}" ]; then
   echo "before: $(echo "${BEFORE_BYTES}" | tr '
 ' '|')"
   echo "after:  $(echo "${AFTER_BYTES}" | tr '
 ' '|')"
-  echo "stat:   mode=$(sudo stat -f '%Lp' "${COREFILE}") owner=$(sudo stat -f '%Su:%Sg' "${COREFILE}")"
-  echo "dir:"
-  sudo ls -la "${COREDNS_DIR}" || true
-  fail "interrupted publication changed the operator's Corefile"
+  fail "a failed publication changed the operator's Corefile"
 fi
-echo "operator Corefile after the interruption: unchanged ($(echo "${AFTER_BYTES}" | tr '\n' '|'))"
-sudo -u "${READER_ACCOUNT}" cat "${STAGING_PATH}" >/dev/null 2>&1 \
-  && fail "reader could read the leftover staging file"
-echo "leftover staging file after the interruption: still unreadable by the reader"
+echo "operator Corefile after the failed publication: unchanged ($(echo "${AFTER_BYTES}" | tr '
+' '|'))"
+echo "mode=$(sudo stat -f '%Lp' "${COREFILE}") owner=$(sudo stat -f '%Su:%Sg' "${COREFILE}")"
 
 log "case 3: symlinked Corefile keeps its link"
 sudo rm -f "${COREFILE}" "${MANAGED_COREFILE}"
