@@ -153,7 +153,16 @@ pkill -9 -f "dns setup" 2>/dev/null || true
 kill -9 "${SETUP_PID}" 2>/dev/null || true
 sleep 1
 AFTER_BYTES="$(sudo cat "${COREFILE}")"
-[ "${BEFORE_BYTES}" = "${AFTER_BYTES}" ] || fail "interrupted publication changed the operator's Corefile"
+if [ "${BEFORE_BYTES}" != "${AFTER_BYTES}" ]; then
+  echo "before: $(echo "${BEFORE_BYTES}" | tr '
+' '|')"
+  echo "after:  $(echo "${AFTER_BYTES}" | tr '
+' '|')"
+  echo "stat:   mode=$(sudo stat -f '%Lp' "${COREFILE}") owner=$(sudo stat -f '%Su:%Sg' "${COREFILE}")"
+  echo "dir:"
+  sudo ls -la "${COREDNS_DIR}" || true
+  fail "interrupted publication changed the operator's Corefile"
+fi
 echo "operator Corefile after the interruption: unchanged ($(echo "${AFTER_BYTES}" | tr '\n' '|'))"
 sudo -u "${READER_ACCOUNT}" cat "${STAGING_PATH}" >/dev/null 2>&1 \
   && fail "reader could read the leftover staging file"
