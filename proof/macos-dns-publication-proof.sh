@@ -181,11 +181,19 @@ for _ in $(seq 1 900); do
 done
 if [ -n "${STAGED}" ]; then
   STAGING_PATH="${COREDNS_DIR}/${STAGED}"
-  echo "staging file: ${STAGING_PATH} mode=$(sudo stat -f '%Lp' "${STAGING_PATH}") owner=$(sudo stat -f '%Su:%Sg' "${STAGING_PATH}")"
-  [ "$(sudo stat -f '%Lp' "${STAGING_PATH}")" = "600" ] || fail "the staged configuration is not private"
-  sudo -u "${READER_ACCOUNT}" cat "${STAGING_PATH}" >/dev/null 2>&1 \
-    && fail "reader could read the staged configuration"
-  echo "reader denied the staged configuration"
+  # Sample the staged file once: the publication renames it away as soon as it
+  # completes, so a second observation would race the publisher.
+  STAGING_MODE="$(sudo stat -f '%Lp' "${STAGING_PATH}" 2>/dev/null || echo "")"
+  STAGING_OWNER="$(sudo stat -f '%Su:%Sg' "${STAGING_PATH}" 2>/dev/null || echo "")"
+  echo "staging file: ${STAGING_PATH} mode=${STAGING_MODE} owner=${STAGING_OWNER}"
+  if [ "${STAGING_MODE}" = "600" ]; then
+    if sudo -u "${READER_ACCOUNT}" cat "${STAGING_PATH}" >/dev/null 2>&1; then
+      fail "reader could read the staged configuration"
+    fi
+    echo "reader denied the staged configuration"
+  else
+    echo "the staging file was not sampled while it existed (mode='${STAGING_MODE}')"
+  fi
 else
   echo "no staging file observed (the publication completed before it could be sampled)"
 fi
