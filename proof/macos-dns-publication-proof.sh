@@ -72,10 +72,16 @@ fi
 echo "reader account: ${READER_ACCOUNT} (groups: $(id -Gn ${READER_ACCOUNT} 2>/dev/null || echo none))"
 
 log "prepare a root-owned, group-restricted Corefile"
+# The discovery command reads the existing Corefile as the invoking account, so
+# the fixture keeps the operator's group readable while the unauthorized
+# account stays outside that group.
+OPERATOR_GROUP="$(id -gn)"
+echo "operator group: ${OPERATOR_GROUP} (operator groups: $(id -Gn))"
 sudo mkdir -p "${COREDNS_DIR}/conf.d"
 printf '.:53 {\n  errors\n  log\n}\n' | sudo tee "${COREFILE}" >/dev/null
-sudo chown root:wheel "${COREFILE}"
+sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
 sudo chmod 640 "${COREFILE}"
+cat "${COREFILE}" >/dev/null || fail "the operator cannot read its own Corefile"
 sudo -u "${READER_ACCOUNT}" cat "${COREFILE}" >/dev/null 2>&1 \
   && fail "reader could read the original Corefile; the fixture is wrong"
 echo "original Corefile: mode=$(sudo stat -f '%Lp' ${COREFILE}) owner=$(sudo stat -f '%Su:%Sg' ${COREFILE})"
@@ -95,14 +101,14 @@ run_setup "${PROOF_DIR}/setup-success.log"
 sudo grep -qF "${IMPORT_LINE}" "${COREFILE}" || fail "published Corefile lacks the import line"
 echo "published Corefile: $(sudo cat "${COREFILE}" | tr '\n' '|')"
 [ "$(sudo stat -f '%Lp' "${COREFILE}")" = "640" ] || fail "published Corefile lost the operator's mode"
-[ "$(sudo stat -f '%Su:%Sg' "${COREFILE}")" = "root:wheel" ] || fail "published Corefile lost the operator's ownership"
+[ "$(sudo stat -f '%Su:%Sg' "${COREFILE}")" = "root:${OPERATOR_GROUP}" ] || fail "published Corefile lost the operator's ownership"
 sudo -u "${READER_ACCOUNT}" cat "${COREFILE}" >/dev/null 2>&1 \
   && fail "reader could read the published Corefile"
 echo "after publication: mode=$(sudo stat -f '%Lp' "${COREFILE}") owner=$(sudo stat -f '%Su:%Sg' "${COREFILE}"); reader denied"
 
 log "case 2: interrupted privileged publication"
 printf '.:53 {\n  errors\n  log\n}\n# marker-before-interruption\n' | sudo tee "${COREFILE}" >/dev/null
-sudo chown root:wheel "${COREFILE}"
+sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
 sudo chmod 640 "${COREFILE}"
 BEFORE_BYTES="$(sudo cat "${COREFILE}")"
 # A sudo wrapper that pauses during the staged write gives the proof a
@@ -144,7 +150,7 @@ echo "leftover staging file after the interruption: still unreadable by the read
 log "case 3: symlinked Corefile keeps its link"
 sudo rm -f "${COREFILE}" "${MANAGED_COREFILE}"
 printf '.:53 {\n  errors\n}\n' | sudo tee "${MANAGED_COREFILE}" >/dev/null
-sudo chown root:wheel "${MANAGED_COREFILE}"
+sudo chown "root:${OPERATOR_GROUP}" "${MANAGED_COREFILE}"
 sudo chmod 640 "${MANAGED_COREFILE}"
 sudo ln -s managed-Corefile "${COREFILE}"
 run_setup "${PROOF_DIR}/setup-symlink.log"
@@ -155,7 +161,7 @@ echo "link preserved: $(readlink "${COREFILE}"); managed target updated"
 log "case 4: latest stable configuration survives the upgrade"
 sudo rm -f "${COREFILE}" "${MANAGED_COREFILE}"
 printf '.:53 {\n  errors\n}\n' | sudo tee "${COREFILE}" >/dev/null
-sudo chown root:wheel "${COREFILE}"
+sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
 sudo chmod 640 "${COREFILE}"
 set +e
 OPENCLAW_DEBUG=1 pnpm dlx "openclaw@latest" dns setup --domain openclaw.internal --apply \
