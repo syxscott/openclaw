@@ -83,11 +83,11 @@ echo "original Corefile: mode=$(sudo stat -f '%Lp' ${COREFILE}) owner=$(sudo sta
 run_setup() {
   # The CLI runs unprivileged so the publication takes the privileged path.
   set +e
-  pnpm openclaw dns setup --domain openclaw.internal --apply >"$1" 2>&1
+  OPENCLAW_DEBUG=1 pnpm openclaw dns setup --domain openclaw.internal --apply >"$1" 2>&1
   local status=$?
   set -e
   echo "exit status: ${status} (a failure at the CoreDNS service restart is expected on a runner)"
-  tail -n 15 "$1" || true
+  grep -E "Error|error|failed|EPERM|EACCES|ENOENT|denied" "$1" | tail -n 12 || true
 }
 
 log "case 1: successful privileged publication"
@@ -158,7 +158,7 @@ printf '.:53 {\n  errors\n}\n' | sudo tee "${COREFILE}" >/dev/null
 sudo chown root:wheel "${COREFILE}"
 sudo chmod 640 "${COREFILE}"
 set +e
-pnpm dlx "openclaw@latest" dns setup --domain openclaw.internal --apply \
+OPENCLAW_DEBUG=1 pnpm dlx "openclaw@latest" dns setup --domain openclaw.internal --apply \
   >"${PROOF_DIR}/setup-stable.log" 2>&1
 STABLE_STATUS=$?
 set -e
