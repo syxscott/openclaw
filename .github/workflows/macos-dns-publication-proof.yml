@@ -1,0 +1,42 @@
+name: macOS DNS publication proof
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - proof/macos-dns-publication
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    name: CoreDNS publication on macOS
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Check out the reviewed head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: syxscott/openclaw
+          ref: fix/dns-corefile-atomic-publish
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+      - name: Install CoreDNS
+        run: brew install coredns || true
+      - name: Run the publication proof
+        run: bash "$PWD/proof/macos-dns-publication-proof.sh"
+      - name: Upload the proof log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b488496f43628fa # v4.6.2
+        with:
+          name: macos-dns-publication-proof
+          path: |
+            ${{ runner.temp }}/openclaw-dns-proof.*/**/*.log
+          if-no-files-found: warn
