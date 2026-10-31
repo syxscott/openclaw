@@ -78,6 +78,12 @@ if ! id -u "${READER_ACCOUNT}" >/dev/null 2>&1; then
 fi
 echo "reader account: ${READER_ACCOUNT} (groups: $(id -Gn ${READER_ACCOUNT} 2>/dev/null || echo none))"
 
+log "warm up the CLI build"
+# The first CLI run on a fresh runner builds the bundled plugins, which takes
+# minutes. Warm the cache so the measured runs exercise the command itself.
+pnpm openclaw --version >/dev/null 2>&1 || true
+echo "warm-up done"
+
 log "prepare a root-owned, group-restricted Corefile"
 # The discovery command reads the existing Corefile as the invoking account, so
 # the fixture keeps the operator's group readable while the unauthorized
@@ -133,7 +139,7 @@ PATH="${PROOF_DIR}/bin:${PATH}" pnpm openclaw dns setup --domain openclaw.intern
   >"${PROOF_DIR}/setup-interrupted.log" 2>&1 &
 SETUP_PID=$!
 STAGED=""
-for _ in $(seq 1 300); do
+for _ in $(seq 1 900); do
   STAGED="$(sudo ls -1 "${COREDNS_DIR}" 2>/dev/null | grep '^\.Corefile' | head -n 1 || true)"
   [ -n "${STAGED}" ] && break
   sleep 0.2
