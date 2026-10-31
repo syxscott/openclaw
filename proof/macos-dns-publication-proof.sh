@@ -38,28 +38,30 @@ echo "brew prefix: $(brew --prefix)"
 sudo -n true || fail "passwordless sudo is required"
 
 log "tailnet-range address for the discovery command"
-# The command refuses to run without a tailnet address, and it skips loopback
-# addresses. Current macOS restricts utun creation, so prefer an alias on an
-# existing external interface and fall back to a new utun.
-TAILNET_IP=""
-for iface in $(ifconfig -l | grep -v '^lo'); do
-  if sudo ifconfig "${iface}" inet 100.64.0.1 netmask 255.192.0.0 alias >/dev/null 2>&1; then
-    TAILNET_IP="100.64.0.1"
-    echo "added ${TAILNET_IP} as an alias on ${iface}"
-    break
-  fi
-done
-if [ -z "${TAILNET_IP}" ]; then
-  for idx in 0 1 2 3 4 5; do
-    if sudo ifconfig "utun${idx}" create >/dev/null 2>&1 \
-      && sudo ifconfig "utun${idx}" inet 100.64.0.1 100.64.0.2 netmask 255.192.0.0 up >/dev/null 2>&1; then
-      TAILNET_IP="100.64.0.1"
-      echo "created utun${idx} with ${TAILNET_IP}"
-      break
-    fi
-  done
-fi
-[ -n "${TAILNET_IP}" ] || fail "could not expose a tailnet-range address on an external interface"
+# The discovery command refuses to run without a tailnet address and skips
+# loopback addresses. A CI runner has no Tailscale, and current macOS refuses
+# to add addresses to its interfaces, so the harness supplies a synthetic
+# non-loopback interface in the tailnet range. Only the environment is
+# synthetic here: the publication under test is the shipped code.
+TAILNET_IP="100.64.0.1"
+cat >"${PROOF_DIR}/tailnet-preload.cjs" <<'PRELOAD'
+const os = require("node:os");
+const original = os.networkInterfaces.bind(os);
+os.networkInterfaces = () => ({
+  ...original(),
+  "en0:proof": [
+    {
+      address: "100.64.0.1",
+      netmask: "255.192.0.0",
+      family: "IPv4",
+      mac: "00:00:00:00:00:00",
+      internal: false,
+      cidr: "100.64.0.1/10",
+    },
+  ],
+});
+PRELOAD
+export NODE_OPTIONS="--require ${PROOF_DIR}/tailnet-preload.cjs"
 node -e 'const os=require("os");const hit=Object.entries(os.networkInterfaces()).flatMap(([n,e])=>(e||[]).filter(x=>!x.internal&&x.address.startsWith("100.64.")).map(x=>n+"="+x.address));if(!hit.length){console.error("no tailnet address visible");process.exit(1)}console.log("visible:",hit.join(","))'
 
 log "unauthorized reader account"
