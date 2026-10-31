@@ -93,7 +93,7 @@ run_setup() {
 log "case 1: successful privileged publication"
 run_setup "${PROOF_DIR}/setup-success.log"
 sudo grep -qF "${IMPORT_LINE}" "${COREFILE}" || fail "published Corefile lacks the import line"
-echo "published Corefile: $(cat "${COREFILE}" | tr '\n' '|')"
+echo "published Corefile: $(sudo cat "${COREFILE}" | tr '\n' '|')"
 [ "$(sudo stat -f '%Lp' "${COREFILE}")" = "640" ] || fail "published Corefile lost the operator's mode"
 [ "$(sudo stat -f '%Su:%Sg' "${COREFILE}")" = "root:wheel" ] || fail "published Corefile lost the operator's ownership"
 sudo -u "${READER_ACCOUNT}" cat "${COREFILE}" >/dev/null 2>&1 \
