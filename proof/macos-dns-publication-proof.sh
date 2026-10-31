@@ -151,6 +151,49 @@ echo "operator Corefile after the failed publication: unchanged ($(echo "${AFTER
 ' '|'))"
 echo "mode=$(sudo stat -f '%Lp' "${COREFILE}") owner=$(sudo stat -f '%Su:%Sg' "${COREFILE}")"
 
+log "case 5: the staged configuration is unreadable outside the operator's group"
+# The privileged publisher stages the configuration in a sibling file before it
+# publishes it. A paused sudo gives the proof a deterministic view of that
+# staging file: it must be private, and an account outside the operator's
+# group must not be able to read it.
+sudo rm -f "${COREFILE}"
+printf '.:53 {\n  errors\n  log\n}\n' | sudo tee "${COREFILE}" >/dev/null
+sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
+sudo chmod 640 "${COREFILE}"
+mkdir -p "${PROOF_DIR}/bin"
+cat >"${PROOF_DIR}/bin/sudo" <<'WRAPPER'
+#!/usr/bin/env bash
+if [ "${1:-}" = "tee" ]; then
+  echo "tee $*" >>"${PROOF_DIR}/sudo-calls.log"
+  sleep 40
+fi
+exec /usr/bin/sudo "$@"
+WRAPPER
+chmod +x "${PROOF_DIR}/bin/sudo"
+PATH="${PROOF_DIR}/bin:${PATH}" pnpm openclaw dns setup --domain openclaw.internal --apply \
+  >"${PROOF_DIR}/setup-staging.log" 2>&1 &
+STAGING_PID=$!
+STAGED=""
+for _ in $(seq 1 900); do
+  STAGED="$(sudo ls -1 "${COREDNS_DIR}" 2>/dev/null | grep '^\.Corefile' | head -n 1 || true)"
+  [ -n "${STAGED}" ] && break
+  sleep 0.2
+done
+if [ -n "${STAGED}" ]; then
+  STAGING_PATH="${COREDNS_DIR}/${STAGED}"
+  echo "staging file: ${STAGING_PATH} mode=$(sudo stat -f '%Lp' "${STAGING_PATH}") owner=$(sudo stat -f '%Su:%Sg' "${STAGING_PATH}")"
+  [ "$(sudo stat -f '%Lp' "${STAGING_PATH}")" = "600" ] || fail "the staged configuration is not private"
+  sudo -u "${READER_ACCOUNT}" cat "${STAGING_PATH}" >/dev/null 2>&1 \
+    && fail "reader could read the staged configuration"
+  echo "reader denied the staged configuration"
+else
+  echo "no staging file observed (the publication completed before it could be sampled)"
+fi
+pkill -9 -f "dns setup" 2>/dev/null || true
+kill -9 "${STAGING_PID}" 2>/dev/null || true
+echo "sudo calls seen by the wrapper:"
+cat "${PROOF_DIR}/sudo-calls.log" 2>/dev/null || echo "(none)"
+
 log "case 3: symlinked Corefile keeps its link"
 sudo rm -f "${COREFILE}" "${MANAGED_COREFILE}"
 printf '.:53 {\n  errors\n}\n' | sudo tee "${MANAGED_COREFILE}" >/dev/null
@@ -168,7 +211,7 @@ printf '.:53 {\n  errors\n}\n' | sudo tee "${COREFILE}" >/dev/null
 sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
 sudo chmod 640 "${COREFILE}"
 set +e
-OPENCLAW_DEBUG=1 pnpm dlx "openclaw@latest" dns setup --domain openclaw.internal --apply \
+OPENCLAW_DEBUG=1 npx --yes "openclaw@latest" dns setup --domain openclaw.internal --apply \
   >"${PROOF_DIR}/setup-stable.log" 2>&1
 STABLE_STATUS=$?
 set -e
