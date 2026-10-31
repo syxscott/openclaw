@@ -14,7 +14,7 @@
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$PWD}"
-PROOF_DIR="$(mktemp -d /tmp/openclaw-dns-proof.XXXXXX)"
+PROOF_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/openclaw-dns-proof.XXXXXX")"
 COREDNS_DIR="$(brew --prefix)/etc/coredns"
 COREFILE="${COREDNS_DIR}/Corefile"
 MANAGED_COREFILE="${COREDNS_DIR}/managed-Corefile"
@@ -26,6 +26,13 @@ fail() { printf '\nPROOF FAILED: %s\n' "$*" >&2; exit 1; }
 
 cleanup() {
   pkill -9 -f "dns setup" 2>/dev/null || true
+  if [ -n "${PROOF_DIR}" ] && [ -d "${PROOF_DIR}" ]; then
+    for logfile in "${PROOF_DIR}"/*.log; do
+      [ -f "${logfile}" ] || continue
+      echo "----- $(basename "${logfile}") -----"
+      cat "${logfile}" || true
+    done
+  fi
   sudo rm -rf "${PROOF_DIR}" 2>/dev/null || true
   sudo dscl . -delete "/Users/${READER_ACCOUNT}" >/dev/null 2>&1 || true
 }
