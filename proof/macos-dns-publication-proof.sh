@@ -131,7 +131,12 @@ for _ in $(seq 1 300); do
   [ -n "${STAGED}" ] && break
   sleep 0.2
 done
-[ -n "${STAGED}" ] || fail "no staging file appeared during the privileged publication"
+if [ -z "${STAGED}" ]; then
+  echo "----- interrupted run log -----"
+  cat "${PROOF_DIR}/setup-interrupted.log" || true
+  echo "----- end log -----"
+  fail "no staging file appeared during the privileged publication"
+fi
 STAGING_PATH="${COREDNS_DIR}/${STAGED}"
 echo "staging file: ${STAGING_PATH} mode=$(sudo stat -f '%Lp' "${STAGING_PATH}") owner=$(sudo stat -f '%Su:%Sg' "${STAGING_PATH}")"
 sudo -u "${READER_ACCOUNT}" cat "${STAGING_PATH}" >/dev/null 2>&1 \
