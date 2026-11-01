@@ -182,6 +182,7 @@ printf '.:53 {\n  errors\n  log\n}\n# marker-before-interruption\n' | sudo tee "
 sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
 sudo chmod 640 "${COREFILE}"
 BEFORE_BYTES="$(sudo cat "${COREFILE}")"
+SERVICE_PID_BEFORE="$(brew services info coredns 2>/dev/null | sed -n 's/.*PID: \([0-9]*\).*/\1/p' || echo none)"
 # A failed privileged publication must leave the operator's Corefile exactly
 # as it was. Making the CoreDNS directory immutable fails the staged
 # publication deterministically, without racing the publication window.
@@ -205,6 +206,12 @@ fi
 echo "operator Corefile after the failed publication: unchanged ($(echo "${AFTER_BYTES}" | tr '
 ' '|'))"
 echo "mode=$(sudo stat -f '%Lp' "${COREFILE}") owner=$(sudo stat -f '%Su:%Sg' "${COREFILE}")"
+grep -q "Starting CoreDNS" "${PROOF_DIR}/setup-failed.log" \
+  && fail "the failed publication still restarted CoreDNS"
+SERVICE_PID_AFTER="$(brew services info coredns 2>/dev/null | sed -n 's/.*PID: \([0-9]*\).*/\1/p' || echo none)"
+[ "${SERVICE_PID_BEFORE}" = "${SERVICE_PID_AFTER}" ] \
+  || fail "the CoreDNS service identity changed across the failed publication (${SERVICE_PID_BEFORE} -> ${SERVICE_PID_AFTER})"
+echo "CoreDNS not restarted across the failed publication (service PID: ${SERVICE_PID_AFTER})"
 
 log "case 6: an ACL-denied principal stays denied across the publication"
 # macOS carries a per-file access policy beside the mode. A replacement inode
@@ -263,6 +270,45 @@ echo "reader still denied the operator's Corefile"
 LEFTOVER="$(sudo ls -1 "${COREDNS_DIR}" 2>/dev/null | grep -E '^\.(Corefile|openclaw-dns-config)' | head -n 1 || true)"
 [ -z "${LEFTOVER}" ] || fail "a staging sibling survived the aborted publication: ${LEFTOVER}"
 echo "no staging sibling survived"
+
+log "case 8: an interrupted ordinary publication preserves the managed target and policy"
+# The symlinked managed target publishes through the ordinary path. An
+# immutable managed target fails the publication after the staged file has
+# been fully restored; the operator's target - bytes, deny policy and all -
+# must be exactly as it was, with the excluded account still refused.
+sudo rm -f "${COREFILE}" "${MANAGED_COREFILE}"
+printf '.:53 {\n  errors\n  log\n}\n' | sudo tee "${MANAGED_COREFILE}" >/dev/null
+sudo chown "root:${OPERATOR_GROUP}" "${MANAGED_COREFILE}"
+sudo chmod 640 "${MANAGED_COREFILE}"
+sudo chmod +a "user:${READER_ACCOUNT} deny read" "${MANAGED_COREFILE}"
+sudo ln -s managed-Corefile "${COREFILE}"
+BEFORE_MANAGED_BYTES="$(sudo cat "${MANAGED_COREFILE}")"
+BEFORE_MANAGED_POLICY="$(sudo ls -lde "${MANAGED_COREFILE}" | sed -n 's/^ *[0-9]*: //p' | head -n 1)"
+sudo chflags uchg "${MANAGED_COREFILE}"
+set +e
+OPENCLAW_DEBUG=1 pnpm openclaw dns setup --domain openclaw.internal --apply \
+  >"${PROOF_DIR}/setup-ordinary-failed.log" 2>&1
+ORDINARY_STATUS=$?
+set -e
+sudo chflags nouchg "${MANAGED_COREFILE}"
+echo "interrupted ordinary publication exit status: ${ORDINARY_STATUS}"
+grep -E "Reason:|Error:" "${PROOF_DIR}/setup-ordinary-failed.log" | tail -n 3 || true
+[ "${ORDINARY_STATUS}" != "0" ] || fail "the publication was expected to fail"
+AFTER_MANAGED_BYTES="$(sudo cat "${MANAGED_COREFILE}")"
+[ "${BEFORE_MANAGED_BYTES}" = "${AFTER_MANAGED_BYTES}" ] \
+  || fail "the interrupted ordinary publication changed the managed target"
+AFTER_MANAGED_POLICY="$(sudo ls -lde "${MANAGED_COREFILE}" | sed -n 's/^ *[0-9]*: //p' | head -n 1)"
+[ "${BEFORE_MANAGED_POLICY}" = "${AFTER_MANAGED_POLICY}" ] \
+  || fail "the interrupted ordinary publication changed the managed target's access policy"
+echo "managed target after the interruption: unchanged; policy: ${AFTER_MANAGED_POLICY}"
+sudo -u "${READER_ACCOUNT}" cat "${MANAGED_COREFILE}" >/dev/null 2>&1 \
+  && fail "reader could read the managed target after the interruption"
+echo "reader still denied the managed target"
+grep -q "Starting CoreDNS" "${PROOF_DIR}/setup-ordinary-failed.log" \
+  && fail "the interrupted ordinary publication still restarted CoreDNS"
+LEFTOVER="$(sudo ls -1 "${COREDNS_DIR}" 2>/dev/null | grep -E '^\.(Corefile|openclaw-dns-config)' | head -n 1 || true)"
+[ -z "${LEFTOVER}" ] || fail "a staging sibling survived the interrupted ordinary publication: ${LEFTOVER}"
+echo "no staging sibling survived; CoreDNS not restarted"
 
 log "case 3: symlinked Corefile keeps its link"
 sudo rm -f "${COREFILE}" "${MANAGED_COREFILE}"
