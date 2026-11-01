@@ -121,7 +121,7 @@ os.networkInterfaces = () => ({
   ],
 });
 PRELOAD
-export NODE_OPTIONS="--require ${PROOF_DIR}/tailnet-preload.cjs"
+export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require ${PROOF_DIR}/tailnet-preload.cjs"
 node -e 'const os=require("os");const hit=Object.entries(os.networkInterfaces()).flatMap(([n,e])=>(e||[]).filter(x=>!x.internal&&x.address.startsWith("100.64.")).map(x=>n+"="+x.address));if(!hit.length){console.error("no tailnet address visible");process.exit(1)}console.log("visible:",hit.join(","))'
 
 log "unauthorized reader account"
