@@ -267,7 +267,7 @@ sudo ls -lde "${COREFILE}" | tail -n 2
 sudo -u "${READER_ACCOUNT}" cat "${COREFILE}" >/dev/null 2>&1 \
   && fail "reader could read the operator's Corefile after the interruption"
 echo "reader still denied the operator's Corefile"
-LEFTOVER="$(sudo ls -1 "${COREDNS_DIR}" 2>/dev/null | grep -E '^\.(Corefile|openclaw-dns-config)' | head -n 1 || true)"
+LEFTOVER="$(sudo ls -1A "${COREDNS_DIR}" 2>/dev/null | grep -E '^\.(Corefile|openclaw-dns-config)' | head -n 1 || true)"
 [ -z "${LEFTOVER}" ] || fail "a staging sibling survived the aborted publication: ${LEFTOVER}"
 echo "no staging sibling survived"
 
@@ -306,7 +306,7 @@ sudo -u "${READER_ACCOUNT}" cat "${MANAGED_COREFILE}" >/dev/null 2>&1 \
 echo "reader still denied the managed target"
 grep -q "Starting CoreDNS" "${PROOF_DIR}/setup-ordinary-failed.log" \
   && fail "the interrupted ordinary publication still restarted CoreDNS"
-LEFTOVER="$(sudo ls -1 "${COREDNS_DIR}" 2>/dev/null | grep -E '^\.(Corefile|openclaw-dns-config)' | head -n 1 || true)"
+LEFTOVER="$(sudo ls -1A "${COREDNS_DIR}" 2>/dev/null | grep -E '^\.(Corefile|openclaw-dns-config)' | head -n 1 || true)"
 [ -z "${LEFTOVER}" ] || fail "a staging sibling survived the interrupted ordinary publication: ${LEFTOVER}"
 echo "no staging sibling survived; CoreDNS not restarted"
 
