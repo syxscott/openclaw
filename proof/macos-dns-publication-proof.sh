@@ -46,6 +46,52 @@ log "environment"
 # measured runs for minutes.
 export HOMEBREW_NO_AUTO_UPDATE=1
 export HOMEBREW_NO_INSTALL_CLEANUP=1
+# The proof observes the publication from inside the CLI's own runtime: a
+# preload records every spawned command, can force the ordinary publisher's
+# ownership hand-off to fail the way it does for an account outside the
+# operator's group, and can pause the privileged tee so the staged file is
+# observable while it exists. The publication itself stays the shipped code.
+cat >"${PROOF_DIR}/publication-recorder.cjs" <<'RECORDER'
+const cp = require("node:child_process");
+const fs = require("node:fs");
+const log = process.env.SUDO_CALL_LOG;
+const originalSpawnSync = cp.spawnSync;
+if (log) {
+  cp.spawnSync = function (command, args, options) {
+    try {
+      fs.appendFileSync(log, `${command} ${(args || []).join(" ")}\n`);
+    } catch {}
+    return originalSpawnSync.call(this, command, args, options);
+  };
+}
+if (process.env.FORCE_PRIVILEGED === "1") {
+  const originalChownSync = fs.chownSync;
+  fs.chownSync = function (target, uid, gid) {
+    if (String(target).includes(".openclaw-dns-config")) {
+      const error = new Error(`EPERM: operation not permitted, chown '${target}'`);
+      error.code = "EPERM";
+      error.errno = 1;
+      error.syscall = "chown";
+      error.path = String(target);
+      throw error;
+    }
+    return originalChownSync.call(this, target, uid, gid);
+  };
+}
+const pauseMs = Number(process.env.SUDO_TEE_PAUSE_MS || 0);
+if (pauseMs > 0) {
+  cp.spawnSync = function (command, args, options) {
+    if (command === "sudo" && Array.isArray(args) && args[0] === "tee") {
+      const start = Date.now();
+      while (Date.now() - start < pauseMs) {
+        // Hold the staged window open: the tee has not written yet.
+      }
+    }
+    return originalSpawnSync.call(this, command, args, options);
+  };
+}
+RECORDER
+export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require ${PROOF_DIR}/publication-recorder.cjs"
 echo "macOS: $(sw_vers -productVersion) ($(uname -m))"
 echo "node: $(node --version)"
 echo "brew prefix: $(brew --prefix)"
@@ -162,36 +208,24 @@ echo "mode=$(sudo stat -f '%Lp' "${COREFILE}") owner=$(sudo stat -f '%Su:%Sg' "$
 
 log "case 5: the staged configuration is unreadable outside the operator's group"
 # The privileged publisher stages the configuration in a sibling file before it
-# publishes it. macOS lets an unprivileged account hand a file's ownership away,
-# so a root-owned Corefile alone still publishes through the ordinary path; a
-# root-owned, non-writable directory is what forces the privileged path. A
-# paused sudo then gives the proof a deterministic view of the staging file: it
-# must be private, and an account outside the operator's group must not be able
-# to read it.
+# publishes it. macOS lets an unprivileged account hand a file's ownership
+# away, so a root-owned Corefile alone still publishes through the ordinary
+# path; the recorder forces the ordinary publisher's ownership hand-off to fail
+# exactly the way it does for an account outside the operator's group, and the
+# publication then takes the real privileged path. A paused tee makes the
+# staged file observable while it holds the configuration.
 sudo rm -f "${COREFILE}"
 printf '.:53 {\n  errors\n  log\n}\n' | sudo tee "${COREFILE}" >/dev/null
 sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
 sudo chmod 640 "${COREFILE}"
-COREDNS_DIR_OWNER="$(sudo stat -f '%Su:%Sg' "${COREDNS_DIR}")"
-sudo chown root:wheel "${COREDNS_DIR}"
-sudo chmod 755 "${COREDNS_DIR}"
-mkdir -p "${PROOF_DIR}/bin"
-cat >"${PROOF_DIR}/bin/sudo" <<'WRAPPER'
-#!/usr/bin/env bash
-echo "sudo $*" >>"${PROOF_DIR}/sudo-calls.log"
-if [ "${1:-}" = "tee" ]; then
-  sleep 40
-fi
-exec /usr/bin/sudo "$@"
-WRAPPER
-chmod +x "${PROOF_DIR}/bin/sudo"
-PATH="${PROOF_DIR}/bin:${PATH}" pnpm openclaw dns setup --domain openclaw.internal --apply \
+: >"${PROOF_DIR}/sudo-calls.log"
+FORCE_PRIVILEGED=1 SUDO_TEE_PAUSE_MS=45000 SUDO_CALL_LOG="${PROOF_DIR}/sudo-calls.log" \
+  pnpm openclaw dns setup --domain openclaw.internal --apply \
   >"${PROOF_DIR}/setup-staging.log" 2>&1 &
 STAGING_PID=$!
 STAGED=""
-for _ in $(seq 1 900); do
-  # The wrapper records the paused tee, which names the staged file.
-  STAGED="$(sed -n 's/^tee \(.*\)$/\1/p' "${PROOF_DIR}/sudo-calls.log" 2>/dev/null | head -n 1 || true)"
+for _ in $(seq 1 300); do
+  STAGED="$(grep -m 1 '^sudo tee ' "${PROOF_DIR}/sudo-calls.log" 2>/dev/null | sed 's/^sudo tee //' || true)"
   [ -n "${STAGED}" ] && break
   sleep 0.2
 done
@@ -202,15 +236,12 @@ if [ -n "${STAGED}" ]; then
   STAGING_MODE="$(sudo stat -f '%Lp' "${STAGING_PATH}" 2>/dev/null || echo "")"
   STAGING_OWNER="$(sudo stat -f '%Su:%Sg' "${STAGING_PATH}" 2>/dev/null || echo "")"
   echo "staging file: ${STAGING_PATH} mode=${STAGING_MODE} owner=${STAGING_OWNER}"
-  if [ "${STAGING_MODE}" != "600" ] && [ "${STAGING_MODE}" != "640" ]; then
-    fail "the staged configuration was not sampled while it existed (mode='${STAGING_MODE}')"
-  fi
+  [ "${STAGING_MODE}" = "600" ] || fail "the staged configuration is not private (mode=${STAGING_MODE})"
   if sudo -u "${READER_ACCOUNT}" cat "${STAGING_PATH}" >/dev/null 2>&1; then
     fail "reader could read the staged configuration"
   fi
-  echo "reader denied the staged configuration (mode=${STAGING_MODE})"
+  echo "reader denied the staged configuration"
 else
-  echo "no staging file observed (the publication completed before it could be sampled)"
   echo "----- sudo calls -----"
   cat "${PROOF_DIR}/sudo-calls.log" 2>/dev/null || echo "(none)"
   echo "----- setup-staging.log (tail) -----"
@@ -220,9 +251,6 @@ else
 fi
 pkill -9 -f "dns setup" 2>/dev/null || true
 kill -9 "${STAGING_PID}" 2>/dev/null || true
-sudo chown "${COREDNS_DIR_OWNER}" "${COREDNS_DIR}"
-echo "sudo calls seen by the wrapper:"
-cat "${PROOF_DIR}/sudo-calls.log" 2>/dev/null || echo "(none)"
 
 log "case 6: an ACL-denied principal stays denied across the publication"
 # macOS carries a per-file access policy beside the mode. A replacement inode
