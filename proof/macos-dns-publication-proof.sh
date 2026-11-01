@@ -168,8 +168,8 @@ sudo chmod 640 "${COREFILE}"
 mkdir -p "${PROOF_DIR}/bin"
 cat >"${PROOF_DIR}/bin/sudo" <<'WRAPPER'
 #!/usr/bin/env bash
+echo "sudo $*" >>"${PROOF_DIR}/sudo-calls.log"
 if [ "${1:-}" = "tee" ]; then
-  echo "tee $*" >>"${PROOF_DIR}/sudo-calls.log"
   sleep 40
 fi
 exec /usr/bin/sudo "$@"
@@ -201,6 +201,10 @@ if [ -n "${STAGED}" ]; then
   echo "reader denied the staged configuration (mode=${STAGING_MODE})"
 else
   echo "no staging file observed (the publication completed before it could be sampled)"
+  echo "----- setup-staging.log (tail) -----"
+  tail -n 25 "${PROOF_DIR}/setup-staging.log" || true
+  echo "----- end log -----"
+  fail "the staged configuration was never observed"
 fi
 pkill -9 -f "dns setup" 2>/dev/null || true
 kill -9 "${STAGING_PID}" 2>/dev/null || true
@@ -216,12 +220,12 @@ sudo rm -f "${COREFILE}"
 printf '.:53 {\n  errors\n  log\n}\n' | sudo tee "${COREFILE}" >/dev/null
 sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
 sudo chmod 644 "${COREFILE}"
-sudo chmod +a "user:${READER_ACCOUNT} deny read" "${COREFILE}"
+sudo chmod +a "user:${READER_ACCOUNT} deny read" "${COREFILE}" || fail "chmod +a failed"
 echo "policy before the publication:"
 sudo ls -lde "${COREFILE}" | tail -n 2
 # The publication restores the policy from the printed form; prove that form
 # is accepted before the publication depends on it.
-PRINTED_POLICY="$(sudo ls -lde "${COREFILE}" | sed -n 's/^[0-9]*: //p' | head -n 1)"
+PRINTED_POLICY="$(sudo ls -lde "${COREFILE}" | sed -n 's/^ *[0-9]*: //p' | head -n 1)"
 [ -n "${PRINTED_POLICY}" ] || fail "the access policy was not printed"
 sudo chmod +a "${PRINTED_POLICY}" "${COREFILE}" || fail "the printed access policy does not round-trip"
 sudo -u "${READER_ACCOUNT}" cat "${COREFILE}" >/dev/null 2>&1 \
