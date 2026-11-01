@@ -158,13 +158,19 @@ echo "mode=$(sudo stat -f '%Lp' "${COREFILE}") owner=$(sudo stat -f '%Su:%Sg' "$
 
 log "case 5: the staged configuration is unreadable outside the operator's group"
 # The privileged publisher stages the configuration in a sibling file before it
-# publishes it. A paused sudo gives the proof a deterministic view of that
-# staging file: it must be private, and an account outside the operator's
-# group must not be able to read it.
+# publishes it. macOS lets an unprivileged account hand a file's ownership away,
+# so a root-owned Corefile alone still publishes through the ordinary path; a
+# root-owned, non-writable directory is what forces the privileged path. A
+# paused sudo then gives the proof a deterministic view of the staging file: it
+# must be private, and an account outside the operator's group must not be able
+# to read it.
 sudo rm -f "${COREFILE}"
 printf '.:53 {\n  errors\n  log\n}\n' | sudo tee "${COREFILE}" >/dev/null
 sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
 sudo chmod 640 "${COREFILE}"
+COREDNS_DIR_OWNER="$(sudo stat -f '%Su:%Sg' "${COREDNS_DIR}")"
+sudo chown root:wheel "${COREDNS_DIR}"
+sudo chmod 755 "${COREDNS_DIR}"
 mkdir -p "${PROOF_DIR}/bin"
 cat >"${PROOF_DIR}/bin/sudo" <<'WRAPPER'
 #!/usr/bin/env bash
@@ -208,6 +214,7 @@ else
 fi
 pkill -9 -f "dns setup" 2>/dev/null || true
 kill -9 "${STAGING_PID}" 2>/dev/null || true
+sudo chown "${COREDNS_DIR_OWNER}" "${COREDNS_DIR}"
 echo "sudo calls seen by the wrapper:"
 cat "${PROOF_DIR}/sudo-calls.log" 2>/dev/null || echo "(none)"
 
