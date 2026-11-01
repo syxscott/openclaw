@@ -78,7 +78,12 @@ log "unauthorized reader account"
 if ! id -u "${READER_ACCOUNT}" >/dev/null 2>&1; then
   sudo dscl . -create "/Users/${READER_ACCOUNT}" UserShell /usr/bin/false
   sudo dscl . -create "/Users/${READER_ACCOUNT}" UniqueID 54123
+  sudo dscl . -create "/Users/${READER_ACCOUNT}" PrimaryGroupID 54123
 fi
+# The access-policy machinery resolves an account by its name, which needs a
+# complete directory-service record.
+sudo dscl . -create "/Users/${READER_ACCOUNT}" FullName "DNS Proof Reader" >/dev/null 2>&1 || true
+sudo dscl . -create "/Users/${READER_ACCOUNT}" RealName "DNS Proof Reader" >/dev/null 2>&1 || true
 echo "reader account: ${READER_ACCOUNT} (groups: $(id -Gn ${READER_ACCOUNT} 2>/dev/null || echo none))"
 
 log "warm up the CLI build"
@@ -175,12 +180,13 @@ PATH="${PROOF_DIR}/bin:${PATH}" pnpm openclaw dns setup --domain openclaw.intern
 STAGING_PID=$!
 STAGED=""
 for _ in $(seq 1 900); do
-  STAGED="$(sudo ls -1 "${COREDNS_DIR}" 2>/dev/null | grep '^\.Corefile' | head -n 1 || true)"
+  # The wrapper records the paused tee, which names the staged file.
+  STAGED="$(sed -n 's/^tee \(.*\)$/\1/p' "${PROOF_DIR}/sudo-calls.log" 2>/dev/null | head -n 1 || true)"
   [ -n "${STAGED}" ] && break
   sleep 0.2
 done
 if [ -n "${STAGED}" ]; then
-  STAGING_PATH="${COREDNS_DIR}/${STAGED}"
+  STAGING_PATH="${STAGED}"
   # Sample the staged file once: the publication renames it away as soon as it
   # completes, so a second observation would race the publisher.
   STAGING_MODE="$(sudo stat -f '%Lp' "${STAGING_PATH}" 2>/dev/null || echo "")"
@@ -213,6 +219,11 @@ sudo chmod 644 "${COREFILE}"
 sudo chmod +a "user:${READER_ACCOUNT} deny read" "${COREFILE}"
 echo "policy before the publication:"
 sudo ls -lde "${COREFILE}" | tail -n 2
+# The publication restores the policy from the printed form; prove that form
+# is accepted before the publication depends on it.
+PRINTED_POLICY="$(sudo ls -lde "${COREFILE}" | sed -n 's/^[0-9]*: //p' | head -n 1)"
+[ -n "${PRINTED_POLICY}" ] || fail "the access policy was not printed"
+sudo chmod +a "${PRINTED_POLICY}" "${COREFILE}" || fail "the printed access policy does not round-trip"
 sudo -u "${READER_ACCOUNT}" cat "${COREFILE}" >/dev/null 2>&1 \
   && fail "reader could read the Corefile before the publication; the fixture is wrong"
 echo "reader denied before the publication"
