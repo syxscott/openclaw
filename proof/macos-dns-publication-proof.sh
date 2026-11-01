@@ -267,7 +267,7 @@ sudo ls -lde "${COREFILE}" | tail -n 2
 sudo -u "${READER_ACCOUNT}" cat "${COREFILE}" >/dev/null 2>&1 \
   && fail "reader could read the operator's Corefile after the interruption"
 echo "reader still denied the operator's Corefile"
-LEFTOVER="$(sudo ls -1A "${COREDNS_DIR}" 2>/dev/null | grep -E '^\.(Corefile|openclaw-dns-config)' | head -n 1 || true)"
+LEFTOVER="$(sudo ls -1A "${COREDNS_DIR}" 2>/dev/null | grep -E '^\.(Corefile|managed-Corefile|openclaw-dns-config)' | head -n 1 || true)"
 [ -z "${LEFTOVER}" ] || fail "a staging sibling survived the aborted publication: ${LEFTOVER}"
 echo "no staging sibling survived"
 
@@ -306,9 +306,51 @@ sudo -u "${READER_ACCOUNT}" cat "${MANAGED_COREFILE}" >/dev/null 2>&1 \
 echo "reader still denied the managed target"
 grep -q "Starting CoreDNS" "${PROOF_DIR}/setup-ordinary-failed.log" \
   && fail "the interrupted ordinary publication still restarted CoreDNS"
-LEFTOVER="$(sudo ls -1A "${COREDNS_DIR}" 2>/dev/null | grep -E '^\.(Corefile|openclaw-dns-config)' | head -n 1 || true)"
+LEFTOVER="$(sudo ls -1A "${COREDNS_DIR}" 2>/dev/null | grep -E '^\.(Corefile|managed-Corefile|openclaw-dns-config)' | head -n 1 || true)"
 [ -z "${LEFTOVER}" ] || fail "a staging sibling survived the interrupted ordinary publication: ${LEFTOVER}"
 echo "no staging sibling survived; CoreDNS not restarted"
+
+log "case 9: a full volume fails the ordinary publication without the fallback"
+# The managed target lives on a small RAM disk. Filling it makes the ordinary
+# publisher's staged write fail with a real ENOSPC - a non-permission failure,
+# so the privileged fallback must not run - and the operator's file, its
+# access policy and the excluded reader's denial must all survive untouched.
+sudo rm -f "${COREFILE}" "${MANAGED_COREFILE}"
+RAMDISK_DEV="$(hdiutil attach -nomount ram://4096 | awk 'NR==1{print $1}')"
+diskutil eraseVolume APFS ProofRAM "${RAMDISK_DEV}" >/dev/null
+RAM_MNT="$(ls -d /Volumes/ProofRAM)"
+RAM_DIR="${RAM_MNT}/coredns"
+mkdir -p "${RAM_DIR}"
+printf '.:53 {\n  errors\n  log\n}\n' | sudo tee "${RAM_DIR}/Corefile" >/dev/null
+RAM_COREFILE="${RAM_DIR}/Corefile"
+sudo chown "root:${OPERATOR_GROUP}" "${RAM_COREFILE}"
+sudo chmod 640 "${RAM_COREFILE}"
+sudo chmod +a "user:${READER_ACCOUNT} deny read" "${RAM_COREFILE}"
+# Fill the rest of the volume so the staged write fails mid-publication.
+dd if=/dev/zero of="${RAM_DIR}/filler" bs=1024 count=1500 2>/dev/null || true
+BEFORE_RAM_BYTES="$(sudo cat "${RAM_COREFILE}")"
+sudo ln -s "${RAM_COREFILE}" "${COREFILE}"
+set +e
+OPENCLAW_DEBUG=1 pnpm openclaw dns setup --domain openclaw.internal --apply \
+  >"${PROOF_DIR}/setup-ramdisk.log" 2>&1
+RAM_STATUS=$?
+set -e
+echo "full-volume publication exit status: ${RAM_STATUS}"
+grep -E "Reason:|Error:" "${PROOF_DIR}/setup-ramdisk.log" | tail -n 3 || true
+[ "${RAM_STATUS}" != "0" ] || fail "the publication was expected to fail on the full volume"
+grep -qE "ENOSPC|no space left" "${PROOF_DIR}/setup-ramdisk.log" \
+  || fail "the failure was not the volume's ENOSPC"
+grep -q "Starting CoreDNS" "${PROOF_DIR}/setup-ramdisk.log" \
+  && fail "the failed ordinary publication still restarted CoreDNS"
+AFTER_RAM_BYTES="$(sudo cat "${RAM_COREFILE}")"
+[ "${BEFORE_RAM_BYTES}" = "${AFTER_RAM_BYTES}" ] \
+  || fail "the failed ordinary publication changed the managed file"
+sudo ls -lde "${RAM_COREFILE}" | tail -n 2
+sudo -u "${READER_ACCOUNT}" cat "${RAM_COREFILE}" >/dev/null 2>&1 \
+  && fail "reader could read the managed file after the failed publication"
+echo "managed file after the ENOSPC failure: unchanged; reader still denied"
+sudo rm -f "${RAM_DIR}/filler"
+hdiutil detach "${RAM_MNT}" >/dev/null || true
 
 log "case 3: symlinked Corefile keeps its link"
 sudo rm -f "${COREFILE}" "${MANAGED_COREFILE}"
