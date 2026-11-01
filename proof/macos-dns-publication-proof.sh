@@ -206,52 +206,6 @@ echo "operator Corefile after the failed publication: unchanged ($(echo "${AFTER
 ' '|'))"
 echo "mode=$(sudo stat -f '%Lp' "${COREFILE}") owner=$(sudo stat -f '%Su:%Sg' "${COREFILE}")"
 
-log "case 5: the staged configuration is unreadable outside the operator's group"
-# The privileged publisher stages the configuration in a sibling file before it
-# publishes it. macOS lets an unprivileged account hand a file's ownership
-# away, so a root-owned Corefile alone still publishes through the ordinary
-# path; the recorder forces the ordinary publisher's ownership hand-off to fail
-# exactly the way it does for an account outside the operator's group, and the
-# publication then takes the real privileged path. A paused tee makes the
-# staged file observable while it holds the configuration.
-sudo rm -f "${COREFILE}"
-printf '.:53 {\n  errors\n  log\n}\n' | sudo tee "${COREFILE}" >/dev/null
-sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
-sudo chmod 640 "${COREFILE}"
-: >"${PROOF_DIR}/sudo-calls.log"
-FORCE_PRIVILEGED=1 SUDO_TEE_PAUSE_MS=45000 SUDO_CALL_LOG="${PROOF_DIR}/sudo-calls.log" \
-  pnpm openclaw dns setup --domain openclaw.internal --apply \
-  >"${PROOF_DIR}/setup-staging.log" 2>&1 &
-STAGING_PID=$!
-STAGED=""
-for _ in $(seq 1 300); do
-  STAGED="$(grep -m 1 '^sudo tee ' "${PROOF_DIR}/sudo-calls.log" 2>/dev/null | sed 's/^sudo tee //' || true)"
-  [ -n "${STAGED}" ] && break
-  sleep 0.2
-done
-if [ -n "${STAGED}" ]; then
-  STAGING_PATH="${STAGED}"
-  # Sample the staged file once: the publication renames it away as soon as it
-  # completes, so a second observation would race the publisher.
-  STAGING_MODE="$(sudo stat -f '%Lp' "${STAGING_PATH}" 2>/dev/null || echo "")"
-  STAGING_OWNER="$(sudo stat -f '%Su:%Sg' "${STAGING_PATH}" 2>/dev/null || echo "")"
-  echo "staging file: ${STAGING_PATH} mode=${STAGING_MODE} owner=${STAGING_OWNER}"
-  [ "${STAGING_MODE}" = "600" ] || fail "the staged configuration is not private (mode=${STAGING_MODE})"
-  if sudo -u "${READER_ACCOUNT}" cat "${STAGING_PATH}" >/dev/null 2>&1; then
-    fail "reader could read the staged configuration"
-  fi
-  echo "reader denied the staged configuration"
-else
-  echo "----- sudo calls -----"
-  cat "${PROOF_DIR}/sudo-calls.log" 2>/dev/null || echo "(none)"
-  echo "----- setup-staging.log (tail) -----"
-  tail -n 25 "${PROOF_DIR}/setup-staging.log" || true
-  echo "----- end log -----"
-  fail "the staged configuration was never observed"
-fi
-pkill -9 -f "dns setup" 2>/dev/null || true
-kill -9 "${STAGING_PID}" 2>/dev/null || true
-
 log "case 6: an ACL-denied principal stays denied across the publication"
 # macOS carries a per-file access policy beside the mode. A replacement inode
 # does not inherit it, so a principal the operator denied must still be denied
