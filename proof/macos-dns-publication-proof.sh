@@ -186,14 +186,13 @@ if [ -n "${STAGED}" ]; then
   STAGING_MODE="$(sudo stat -f '%Lp' "${STAGING_PATH}" 2>/dev/null || echo "")"
   STAGING_OWNER="$(sudo stat -f '%Su:%Sg' "${STAGING_PATH}" 2>/dev/null || echo "")"
   echo "staging file: ${STAGING_PATH} mode=${STAGING_MODE} owner=${STAGING_OWNER}"
-  if [ "${STAGING_MODE}" = "600" ]; then
-    if sudo -u "${READER_ACCOUNT}" cat "${STAGING_PATH}" >/dev/null 2>&1; then
-      fail "reader could read the staged configuration"
-    fi
-    echo "reader denied the staged configuration"
-  else
-    echo "the staging file was not sampled while it existed (mode='${STAGING_MODE}')"
+  if [ "${STAGING_MODE}" != "600" ] && [ "${STAGING_MODE}" != "640" ]; then
+    fail "the staged configuration was not sampled while it existed (mode='${STAGING_MODE}')"
   fi
+  if sudo -u "${READER_ACCOUNT}" cat "${STAGING_PATH}" >/dev/null 2>&1; then
+    fail "reader could read the staged configuration"
+  fi
+  echo "reader denied the staged configuration (mode=${STAGING_MODE})"
 else
   echo "no staging file observed (the publication completed before it could be sampled)"
 fi
@@ -201,6 +200,27 @@ pkill -9 -f "dns setup" 2>/dev/null || true
 kill -9 "${STAGING_PID}" 2>/dev/null || true
 echo "sudo calls seen by the wrapper:"
 cat "${PROOF_DIR}/sudo-calls.log" 2>/dev/null || echo "(none)"
+
+log "case 6: an ACL-denied principal stays denied across the publication"
+# macOS carries a per-file access policy beside the mode. A replacement inode
+# does not inherit it, so a principal the operator denied must still be denied
+# after the publication - while the bytes are staged, after an interruption
+# and after the rename.
+sudo rm -f "${COREFILE}"
+printf '.:53 {\n  errors\n  log\n}\n' | sudo tee "${COREFILE}" >/dev/null
+sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
+sudo chmod 644 "${COREFILE}"
+sudo chmod +a "user:${READER_ACCOUNT} deny read" "${COREFILE}"
+echo "policy before the publication:"
+sudo ls -lde "${COREFILE}" | tail -n 2
+sudo -u "${READER_ACCOUNT}" cat "${COREFILE}" >/dev/null 2>&1 \
+  && fail "reader could read the Corefile before the publication; the fixture is wrong"
+echo "reader denied before the publication"
+run_setup "${PROOF_DIR}/setup-acl.log"
+sudo ls -lde "${COREFILE}" | tail -n 2
+sudo -u "${READER_ACCOUNT}" cat "${COREFILE}" >/dev/null 2>&1 \
+  && fail "reader could read the published Corefile; the access policy was lost"
+echo "reader denied after the publication"
 
 log "case 3: symlinked Corefile keeps its link"
 sudo rm -f "${COREFILE}" "${MANAGED_COREFILE}"
