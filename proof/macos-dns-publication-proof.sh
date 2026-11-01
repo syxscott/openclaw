@@ -232,6 +232,41 @@ sudo -u "${READER_ACCOUNT}" cat "${COREFILE}" >/dev/null 2>&1 \
   && fail "reader could read the published Corefile; the access policy was lost"
 echo "reader denied after the publication"
 
+log "case 7: an interrupted restoration leaves an unreadable staging file"
+# The staged file carries the operator's metadata before it is published. An
+# immutable CoreDNS directory fails the final rename after the restoration,
+# so the leftover staging file is a deterministic stand-in for an interruption
+# inside the restoration window: its mode, its access policy and the reader's
+# denial are checked exactly as they stood when the publication was aborted.
+sudo rm -f "${COREFILE}"
+printf '.:53 {\n  errors\n  log\n}\n' | sudo tee "${COREFILE}" >/dev/null
+sudo chown "root:${OPERATOR_GROUP}" "${COREFILE}"
+sudo chmod 640 "${COREFILE}"
+sudo chmod +a "user:${READER_ACCOUNT} deny read" "${COREFILE}"
+BEFORE_BYTES="$(sudo cat "${COREFILE}")"
+sudo chflags uchg "${COREDNS_DIR}"
+set +e
+OPENCLAW_DEBUG=1 pnpm openclaw dns setup --domain openclaw.internal --apply \
+  >"${PROOF_DIR}/setup-restoration.log" 2>&1
+RESTORED_STATUS=$?
+set -e
+sudo chflags nouchg "${COREDNS_DIR}"
+echo "interrupted restoration exit status: ${RESTORED_STATUS}"
+grep -E "Reason:|Error:" "${PROOF_DIR}/setup-restoration.log" | tail -n 3 || true
+[ "${RESTORED_STATUS}" != "0" ] || fail "the publication was expected to fail"
+AFTER_BYTES="$(sudo cat "${COREFILE}")"
+[ "${BEFORE_BYTES}" = "${AFTER_BYTES}" ] || fail "the interrupted restoration changed the operator's Corefile"
+echo "operator Corefile after the interrupted restoration: unchanged"
+STAGED="$(sudo ls -1 "${COREDNS_DIR}" 2>/dev/null | grep '^\.Corefile' | head -n 1 || true)"
+[ -n "${STAGED}" ] || fail "no staging file survived the interrupted restoration"
+STAGING_PATH="${COREDNS_DIR}/${STAGED}"
+echo "leftover staging file: ${STAGING_PATH} mode=$(sudo stat -f '%Lp' "${STAGING_PATH}") owner=$(sudo stat -f '%Su:%Sg' "${STAGING_PATH}")"
+sudo ls -lde "${STAGING_PATH}" | tail -n 2
+sudo -u "${READER_ACCOUNT}" cat "${STAGING_PATH}" >/dev/null 2>&1 \
+  && fail "reader could read the leftover staging file"
+echo "reader denied the leftover staging file"
+sudo rm -f "${STAGING_PATH}"
+
 log "case 3: symlinked Corefile keeps its link"
 sudo rm -f "${COREFILE}" "${MANAGED_COREFILE}"
 printf '.:53 {\n  errors\n}\n' | sudo tee "${MANAGED_COREFILE}" >/dev/null
