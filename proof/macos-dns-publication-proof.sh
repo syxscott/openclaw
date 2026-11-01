@@ -42,6 +42,10 @@ cleanup() {
 trap cleanup EXIT
 
 log "environment"
+# The CLI shells out to brew; an auto-update on a slow network stalls the
+# measured runs for minutes.
+export HOMEBREW_NO_AUTO_UPDATE=1
+export HOMEBREW_NO_INSTALL_CLEANUP=1
 echo "macOS: $(sw_vers -productVersion) ($(uname -m))"
 echo "node: $(node --version)"
 echo "brew prefix: $(brew --prefix)"
@@ -207,6 +211,8 @@ if [ -n "${STAGED}" ]; then
   echo "reader denied the staged configuration (mode=${STAGING_MODE})"
 else
   echo "no staging file observed (the publication completed before it could be sampled)"
+  echo "----- sudo calls -----"
+  cat "${PROOF_DIR}/sudo-calls.log" 2>/dev/null || echo "(none)"
   echo "----- setup-staging.log (tail) -----"
   tail -n 25 "${PROOF_DIR}/setup-staging.log" || true
   echo "----- end log -----"
